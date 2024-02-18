@@ -4,32 +4,50 @@ using ISocket;
 using System.Net.Sockets;
 
 SocketServer server = new SocketServer(null,8888);
-bool b=server.Connecting();
+object _lock=new object();
+bool b=server.InitialServerConnect();
 
-SocketClient sc = new SocketClient();
-await sc.ConnectAsync("127.0.0.1",8888);
-
-server.MessageReceived += Server_MessageReceived;
-sc.MessageReceived += Sc_MessageReceived;
-
-
-sc.SendDataToServer(System.Text.Json.JsonSerializer.Serialize(new SocketMessage() {stationId=1,MesageType=1,message="Test" }));//客户端发
+SocketClient client1 = new SocketClient();
+client1.IpConfig("127.0.0.1", 8888);
+await client1.InitialClientConnectAsync();
+client1.MessageReceivedForServer += Client_MessageReceived;
+server.MessageReceivedForClient += Server_MessageReceived;
 
 
-void Server_MessageReceived(SocketMessage obj,Socket socket)//服务器收
+SocketClient client5 = new SocketClient();
+client5.IpConfig("127.0.0.1", 8888);
+await client5.InitialClientConnectAsync();
+client5.MessageReceivedForServer += Client_MessageReceived;
+SocketClient client6 = new SocketClient();
+client6.IpConfig("127.0.0.1", 8888);
+await client6.InitialClientConnectAsync();
+client6.MessageReceivedForServer += Client_MessageReceived;
+
+
+client1.SendMessageToServer(new SocketMessage() { message="wnls"});
+await Task.Delay(200);
+client5.SendMessageToServer(new SocketMessage() { message = "wnls" });
+await Task.Delay(200);
+client6.SendMessageToServer(new SocketMessage() { message = "wnls" });
+client1.Disconnect();
+Console.ReadKey();
+void Server_MessageReceived(SocketMessage obj, Socket socket)//服务器收
 {
-    Console.WriteLine("---------来自客户端---------");
-    Console.WriteLine(obj.message+socket.LocalEndPoint.ToString());
-    Console.WriteLine("---------来自客户端---------");
-    server.SendMessageToClient(socket, System.Text.Json.JsonSerializer.Serialize(new SocketMessage() {   MesageType = ++obj.MesageType  }));//服务器发
+    lock (_lock)
+    {
+        Console.WriteLine("---------来自客户端---------");
+        Console.WriteLine(obj.MesageType + socket.RemoteEndPoint.ToString() + ":" + obj.message);
+        Console.WriteLine("---------来自客户端---------");
+        server.SendMessageToClient(socket, (new SocketMessage() { message = "namgh" }));//服务器发
+        Console.WriteLine();
+    }
+   
 }
-async void Sc_MessageReceived(SocketMessage obj)//客户端收
+async void Client_MessageReceived(SocketMessage obj)//客户端收
 {
 
     Console.WriteLine("---------来自服务器---------");
-    Console.WriteLine(obj.message );
-    Console.WriteLine("---------来自服务器---------"); 
+    Console.WriteLine(obj.MesageType + ":" + obj.message);
+    Console.WriteLine("---------来自服务器---------");
+    await Console.Out.WriteLineAsync();
 }
-await Task.Delay(14000);
-sc.SendDataToServer(System.Text.Json.JsonSerializer.Serialize(new SocketMessage() {  MesageType = 10000}));//客户端发
-Console.ReadKey();

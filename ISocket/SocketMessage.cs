@@ -8,7 +8,7 @@ namespace ISocket
 {
     public class SocketMessage
     {
-        public int MesageType { get; set; }
+        public int MesageType { get; set; } = -1;
 
         public string message { get; set; }
 
