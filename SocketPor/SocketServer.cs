@@ -12,14 +12,14 @@ using System.Text.Json;
 namespace SocketPor
 {
     [Export(typeof(ISocketble))]
-    public class SocketServer: ISocketble
+    public class SocketServer : ISocketble
     {
         private string IPAddress = "0.0.0.0";
         private int Port = 8888;
         //接收消息事件
         public event Action<SocketMessage> MessageReceivedForServer;
         public event Action<SocketMessage, Socket> MessageReceivedForClient;
-        
+
         //负责监听的Socket
         Socket SocketForWatch = null;
         //客户端池
@@ -38,20 +38,15 @@ namespace SocketPor
         /// <param name="ipAddress">IP地址 若赋值null则默认地址为0.0.0.0</param>
         /// <param name="port">端口号 默认值为8888</param>
 
-        public SocketServer(string ipAddress, int port)
+        public SocketServer()
         {
-            if (ipAddress != null)
-            {
-                IPAddress = ipAddress;
-            }
-            if (port != 8888)
-            {
-                Port = port;
-            }
         }
         public void IpConfig(string IPAddress, int port)
         {
-            IPAddress = IPAddress;
+            if (IPAddress != null)
+            {
+                this.IPAddress = IPAddress;
+            }
             this.Port = port;
         }
         //初始绑定
@@ -106,7 +101,7 @@ namespace SocketPor
                 Socket clientSocket = SocketForWatch.EndAccept(ar);
                 _clients[clientSocket] = new CancellationTokenSource();
                 //} // 添加客户端到字典中，值表示连接状态
-                _lockForClien[clientSocket]=new object();
+                _lockForClien[clientSocket] = new object();
                 Console.WriteLine($"客户端 {clientSocket.RemoteEndPoint} 连接成功");
                 Task.Factory.StartNew(async () => HeartJump(clientSocket));
 
@@ -133,7 +128,7 @@ namespace SocketPor
                 if (!_byteForClien.Keys.Contains(clientSocket))
                 {
                     _byteForClien.TryAdd(clientSocket, new byte[1024]);
-                } 
+                }
                 clientSocket.BeginReceive(_byteForClien[clientSocket], 0, _byteForClien[clientSocket].Length, SocketFlags.None, new AsyncCallback(ReceiveCallback), clientSocket);
 
 
@@ -156,15 +151,15 @@ namespace SocketPor
                     clientSocket.Close();
                 }
                 catch { }
-                if (_clients[clientSocket] != null)
+                if (_clients.ContainsKey(clientSocket))
                 {
                     _clients[clientSocket].Cancel();
                     await Task.Delay(300);
-                } 
+                }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
-                await Console.Out.WriteLineAsync("关断连接:" +ex.Message);
+                await Console.Out.WriteLineAsync("关断连接:" + ex.Message);
             }
             finally
             {
@@ -172,6 +167,7 @@ namespace SocketPor
                 Messages.TryRemove(clientSocket, out _);
                 _byteForClien.TryRemove(clientSocket, out _);
                 _lockForClien.TryRemove(clientSocket, out _);
+                Heartbeat.TryRemove(clientSocket, out _);
             }
         }
 
@@ -202,42 +198,38 @@ namespace SocketPor
                         return;
                     }
                     string[] Msgs = Messages[clientSocket].Split('\n').Where(s => !string.IsNullOrEmpty(s)).Where(x => (x.StartsWith('{') && x.EndsWith('}'))).ToArray();
-                    //Console.WriteLine($"接收数据{clientSocket.RemoteEndPoint}:{Messages[clientSocket]}");
                     Messages[clientSocket] = "";
-                    // 继续接收客户端数据
-
+                    StartReceiving(clientSocket);
                     Parallel.ForEach(Msgs, (Msg, state) =>
                     {
-                        //Console.WriteLine($"解析数据:{Msg}");
-
                         #region MyRegion
-                        SocketMessage socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
-                        if (socketMessage.MesageType != 10000)
+                        SocketMessage socketMessage;
+                        try
+                        {
+                            socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
+                        }
+                        catch
+                        {
+                            return;
+                        }
+                        Heartbeat[clientSocket] = 15;
+                        if (socketMessage.MesageType!=10000)
                         {
                             MessageReceivedForClient?.Invoke(socketMessage, clientSocket);
-                        }
-                        else
-                        {
-                            if (Heartbeat.ContainsKey(clientSocket))
-                            {
-                                Heartbeat[clientSocket] = 15;
-                            }
-                        }
-
+                        } 
+                        
                         #endregion
                     });
-
-                    StartReceiving(clientSocket);
                 }
                 else
                 {
-                    DisconnectClient(clientSocket); // 客户端断开连接
+                    Console.WriteLine("服务器解析数据错误，现将客户端踢出队列");
                 }
             }
-            catch
+            catch (Exception ex)
             {
 
-                Console.WriteLine($"与客户端连接中断");
+                Console.WriteLine("服务器解析数据异常，现将客户端踢出队列---" + ex.Message);
                 DisconnectClient(clientSocket); // 客户端断开连接
             }
 
@@ -253,8 +245,7 @@ namespace SocketPor
                 {
                     string Message = JsonSerializer.Serialize(message) + "\n";
                     byte[] buffer = Encoding.UTF8.GetBytes(Message);
-                    await SendAsync(clientSocket, buffer, 0, buffer.Length);
-                    await Task.Delay(30);
+                    SendAsync(clientSocket, buffer, 0, buffer.Length);
                 }
                 catch
                 {
@@ -273,9 +264,17 @@ namespace SocketPor
             }
         }
 
-        private static async Task<int> SendAsync(Socket socket, byte[] buffer, int offset, int count)
+        private  async Task<int> SendAsync(Socket socket, byte[] buffer, int offset, int count)
         {
-            return await Task.Factory.FromAsync(socket.BeginSend(buffer, offset, count, SocketFlags.None, null, socket), socket.EndSend);
+            if (_lockForClien.ContainsKey(socket))
+            {
+                lock (_lockForClien[socket])
+                {
+                    Thread.Sleep(20);
+                }
+                return await Task.Factory.FromAsync(socket.BeginSend(buffer, offset, count, SocketFlags.None, null, socket), socket.EndSend);
+            }
+            return -1;
         }
 
 
@@ -290,12 +289,12 @@ namespace SocketPor
 
                 Task.Factory.StartNew(async () => Socketlife(clientSocket));
 
-                while (_clients.Keys.Contains(clientSocket) &&!_clients[clientSocket].IsCancellationRequested)
+                while (_clients.Keys.Contains(clientSocket) && !_clients[clientSocket].IsCancellationRequested)
                 {
-                    await Task.Delay(10000);
+                    await Task.Delay(6000);
                     SocketMessage Msgjump = new SocketMessage();
                     Msgjump.MesageType = 10000;
-                    
+
                     try
                     {
                         if (!clientSocket.Connected)
@@ -310,11 +309,10 @@ namespace SocketPor
                         SendMessageToClient(clientSocket, Msgjump);
                     }
                 }
-                DisconnectClient(clientSocket);
             }
-            catch
+            catch (Exception ex)
             {
-                DisconnectClient(clientSocket);
+                Console.WriteLine("心跳发送异常 错误原因：" + ex.Message);
             }
         }
 
@@ -325,7 +323,6 @@ namespace SocketPor
         private async void Socketlife(Socket sk)
         {
             Heartbeat[sk] = 15;
-            string socketName = sk.RemoteEndPoint.ToString();
             while (true)
             {
                 await Task.Delay(1000);
@@ -337,6 +334,7 @@ namespace SocketPor
                     // 如果更新后的心跳计数为0或负数，则断开连接并移除心跳记录 
                     if (currentCount - 1 <= 0)
                     {
+                        await Console.Out.WriteLineAsync(sk.RemoteEndPoint.ToString() + "心跳停止，踢出队列");
                         DisconnectClient(sk);
                         Heartbeat.TryRemove(sk, out _);
                         return;

@@ -11,7 +11,7 @@ using System.ComponentModel.Composition;
 namespace SocketClientPor
 {
     [Export(typeof(ISocketble))]
-    public class SocketClient: ISocketble
+    public class SocketClient : ISocketble
     {
         //用于交互的socket
         private Socket _clientSocket;
@@ -20,7 +20,7 @@ namespace SocketClientPor
         //交互数据(string)
         private string MsgStore = string.Empty;
         //数据接收事件
-        public event Action<SocketMessage> MessageReceivedForServer; 
+        public event Action<SocketMessage> MessageReceivedForServer;
         public event Action<SocketMessage, Socket> MessageReceivedForClient;
         //连接实例
         public static SocketClient intance;
@@ -47,6 +47,7 @@ namespace SocketClientPor
         }
         public async Task InitialClientConnectAsync()
         {
+            await Console.Out.WriteLineAsync("开始连接服务器");
             try
             {
                 if (_clientSocket != null)
@@ -87,23 +88,31 @@ namespace SocketClientPor
             }
 
         }
+        
         public async Task SendMessageToServer(SocketMessage message)
         {
             try
             {
-                string Message= JsonSerializer.Serialize(message) + "\n";
+                string Message = JsonSerializer.Serialize(message) + "\n";
                 byte[] data = Encoding.UTF8.GetBytes(Message);
-                Task.Factory.StartNew(() =>
-                {
-                    _clientSocket.BeginSend(data, 0, data.Length, SocketFlags.None, null, _clientSocket);
-                });
-                await Task.Delay(10);
+                Thread.Sleep(1);
+                Task.Run(send(data));
             }
             catch (Exception ex)
             {
                 Console.WriteLine("发生异常：{0}", ex.Message);
             }
         }
+        object LOCKFORSOCKET = new object();
+        private Func<Task?> send(byte[] data)
+        {
+            lock (LOCKFORSOCKET)
+            {
+                Thread.Sleep(20);
+            }
+            return async () => { _clientSocket.BeginSend(data, 0, data.Length, SocketFlags.None, null, _clientSocket); };
+        }
+
         private void StartReceiving(Socket clientSocket)
         {
             try
@@ -127,6 +136,7 @@ namespace SocketClientPor
                 if (bytesRead > 0)
                 {
                     MsgStore += Encoding.UTF8.GetString(_buffer, 0, bytesRead);
+
                     if (!MsgStore.StartsWith("{"))
                     {
                         MsgStore = "";
@@ -139,44 +149,38 @@ namespace SocketClientPor
                     }
                     string strees = MsgStore;
                     MsgStore = "";
+                    StartReceiving(clientSocket);
                     string[] Msgs = strees.Split('\n').Where(s => !string.IsNullOrEmpty(s)).Where(x => (x.StartsWith('{') && x.EndsWith('}'))).ToArray();
-                    //Console.WriteLine($"接收数据{clientSocket.RemoteEndPoint}:{strees}");
 
 
 
                     Parallel.ForEach(Msgs, (Action<string, ParallelLoopState>)((Msg, state) =>
                     {
-                        //Console.WriteLine($"解析数据:{Msg}");
-                        SocketMessage socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
+                        SocketMessage socketMessage;
+                        try
+                        {
+                            socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
+                        }
+                        catch
+                        {
+                            return;
+                        }
+                        Heartbeat = 15;
                         if (socketMessage.MesageType != 10000)
                         {
                             MessageReceivedForServer?.Invoke(socketMessage);
-
-                        }
-                        else
-                        {
-                            Heartbeat = 15;
-                        }
-
+                        } 
                     }));
-
-                    StartReceiving(clientSocket);
                 }
                 else
                 {
-                    Disconnect(); // 客户端断开连接
-                    InitialClientConnectAsync();
+                    Console.WriteLine("客户端解析数据错误，现将服务器断开");
+                    Disconnect(); // 客户端断开连接 
                 }
             }
             catch (Exception ex)
-            { 
-                Console.WriteLine($"与服务器连接中断");
-                Disconnect(); // 客户端断开连接
-                if (initialState)
-                {
-                    InitialClientConnectAsync();
-                }
-                
+            {
+                Console.WriteLine("客户端解析数据异常，现将服务器断开---：" + ex.Message);
             }
 
         }
@@ -188,7 +192,7 @@ namespace SocketClientPor
                 Task.Factory.StartNew(async () => Socketlife(clientSocket));
                 while (true)
                 {
-                    await Task.Delay(10000);
+                    await Task.Delay(6000);
                     SocketMessage Msgjump = new SocketMessage();
                     Msgjump.MesageType = 10000;
                     if (!clientSocket.Connected)
@@ -202,12 +206,10 @@ namespace SocketClientPor
             {
             }
         }
-        private bool initialState = false;
         private async void Socketlife(Socket sk)
         {
             Heartbeat = 15;
-            initialState = true;
-            while (initialState)
+            while (true)
             {
                 await Task.Delay(1000);
                 Heartbeat--;
@@ -217,10 +219,10 @@ namespace SocketClientPor
                     //Console.WriteLine("客户端生命：" + Heartbeat);
                     // 如果更新后的心跳计数为0或负数，则断开连接并移除心跳记录  
                 }
-                else if (initialState)
+                else
                 {
-                    Heartbeat = 15;
-                    Disconnects();
+                    await Console.Out.WriteLineAsync("心跳停止，断开连接");
+                    Disconnect();
                     InitialClientConnectAsync();
                     break;
                 }
@@ -231,18 +233,6 @@ namespace SocketClientPor
         {
             try
             {
-                initialState = false;
-                _clientSocket.Close();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("" + ex.Message);
-            } 
-        }
-        private void Disconnects()
-        {
-            try
-            { 
                 _clientSocket.Close();
             }
             catch (Exception ex)
@@ -259,7 +249,7 @@ namespace SocketClientPor
 
         public async Task SendMessageToClient(Socket clientSocket, SocketMessage message)
         {
-            Console.WriteLine("如需使用服务器请调用服务器封包"); 
+            Console.WriteLine("如需使用服务器请调用服务器封包");
         }
     }
 }

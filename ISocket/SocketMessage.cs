@@ -10,8 +10,8 @@ namespace ISocket
     {
         public int MesageType { get; set; } = -1;
 
-        public string message { get; set; }
+        public string message { get; set; } = null;
 
-        public int stationId { get; set; }
+        public int stationId { get; set; } = 1;
     }
 }
