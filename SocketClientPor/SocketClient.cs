@@ -174,7 +174,7 @@ namespace SocketClientPor
                             return;
                         }
 
-                        if (!(MsgStore.EndsWith("}") || MsgStore.EndsWith("\r\n") || MsgStore.EndsWith("\r") || MsgStore.EndsWith("\n")))
+                        if (!MsgStore.EndsWith("\n")||(MsgStore.EndsWith("}") || MsgStore.EndsWith("\r\n") || MsgStore.EndsWith("\r") ))
                         {
                             return;
                         }
@@ -213,6 +213,7 @@ namespace SocketClientPor
             }
 
         }
+        //低触发清空缓存区方法
         private async void PickTimeNum()
         {
 

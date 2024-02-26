@@ -161,8 +161,11 @@ namespace SocketPor
             try
             {
                 try
-                {
-                    clientSocket.Close();
+                { 
+                    if (_clients.ContainsKey(clientSocket))
+                    {
+                        clientSocket.Close();
+                    } 
                 }
                 catch { }
                 if (_clients.ContainsKey(clientSocket))
@@ -204,7 +207,7 @@ namespace SocketPor
                                 return;
                             }
                             string strees = Messages[clientSocket];
-                            if (!(Messages[clientSocket].EndsWith("}") || Messages[clientSocket].EndsWith("\r\n") || Messages[clientSocket].EndsWith("\r") || Messages[clientSocket].EndsWith("\n")))
+                            if (!(Messages[clientSocket].EndsWith("\n") || Messages[clientSocket].EndsWith("}") || Messages[clientSocket].EndsWith("\r\n") || Messages[clientSocket].EndsWith("\r") ))
                             {
                                 return;
                             }
