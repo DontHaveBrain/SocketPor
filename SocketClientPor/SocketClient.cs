@@ -7,6 +7,8 @@ using System.Text;
 using System.Text.Json;
 using ISocket;
 using System.ComponentModel.Composition;
+using System.Collections;
+using System.Collections.Concurrent;
 
 namespace SocketClientPor
 {
@@ -37,9 +39,9 @@ namespace SocketClientPor
                 return intance;
             }
         }
-
         private string ipAddress = "0.0.0.0";
         private int port = 6421;
+        bool ctsForSocket = true;
         public void IpConfig(string IPAddress, int port)
         {
             ipAddress = IPAddress;
@@ -56,7 +58,8 @@ namespace SocketClientPor
                 }
             }
             catch { }
-            CancellationTokenSource cts = new CancellationTokenSource();
+
+
             try
             {
                 IPAddress ipAddress = System.Net.IPAddress.Parse(this.ipAddress);
@@ -65,12 +68,13 @@ namespace SocketClientPor
                 _clientSocket = new Socket(ipAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
                 _clientSocket.Connect(remoteEP);
                 await Console.Out.WriteLineAsync($"已连接到服务器 {this.ipAddress}:{this.port}");
-                Task.Factory.StartNew(async () => HeartJump(_clientSocket));
+                ctsForSocket = true;
+
                 StartReceiving(_clientSocket);
             }
             catch (Exception ex)
             {
-                cts.Cancel();
+                ctsForSocket = false;
                 if (_clientSocket != null)
                 {
                     try
@@ -82,20 +86,20 @@ namespace SocketClientPor
                         await Console.Out.WriteLineAsync($"连接异常:{exx.Message}");
                     }
                 }
-                await Console.Out.WriteLineAsync($"无法连接到服务器，正在尝试重新连接...");
+                await Console.Out.WriteLineAsync($"无法连接到服务器，正在尝试重新连接..." + ex.Message);
                 await Task.Delay(5000);
                 InitialClientConnectAsync();
             }
 
         }
-        
+
         public async Task SendMessageToServer(SocketMessage message)
         {
             try
             {
                 string Message = JsonSerializer.Serialize(message) + "\n";
                 byte[] data = Encoding.UTF8.GetBytes(Message);
-                Thread.Sleep(1);
+                await Task.Delay(1);
                 Task.Run(send(data));
             }
             catch (Exception ex)
@@ -117,84 +121,152 @@ namespace SocketClientPor
         {
             try
             {
-                clientSocket.BeginReceive(_buffer, 0, _buffer.Length, SocketFlags.None, new AsyncCallback(ReceiveCallback), clientSocket);
+                Task.Factory.StartNew(() => { ReceiveByte(_clientSocket); });
+                Task.Factory.StartNew(async () => HeartJump(_clientSocket));
+                Task.Factory.StartNew(async () => Socketlife());
+                Task.Factory.StartNew(() => ReceiveCallback());
+                Task.Factory.StartNew(() => { PickTimeNum(); });
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"接收服务器 {clientSocket.RemoteEndPoint} ——数据异常，错误信息：{ex.Message}");
             }
         }
-
-
-        private void ReceiveCallback(IAsyncResult ar)
+        Queue<byte[]> receiveByte = new Queue<byte[]>();
+        private void ReceiveByte(Socket clientSocket)
         {
-            Socket clientSocket = (Socket)ar.AsyncState;
-            try
+            byte[] data = new byte[1024];
+            while (ctsForSocket)
             {
-                int bytesRead = clientSocket.EndReceive(ar);
-
-                if (bytesRead > 0)
+                try
                 {
-                    MsgStore += Encoding.UTF8.GetString(_buffer, 0, bytesRead);
-
-                    if (!MsgStore.StartsWith("{"))
+                    int n = clientSocket.Receive(data);
+                    if (n==0)
                     {
-                        MsgStore = "";
-                        return;
+                        Heartbeat = 0;
                     }
-
-                    if (!(MsgStore.EndsWith("}") || MsgStore.EndsWith("\r\n") || MsgStore.EndsWith("\r") || MsgStore.EndsWith("\n")))
+                    else
                     {
-                        return;
-                    }
-                    string strees = MsgStore;
-                    MsgStore = "";
-                    StartReceiving(clientSocket);
-                    string[] Msgs = strees.Split('\n').Where(s => !string.IsNullOrEmpty(s)).Where(x => (x.StartsWith('{') && x.EndsWith('}'))).ToArray();
+                        receiveByte.Enqueue(data.Take(n).ToArray());
+                    } 
+                }
+                catch  (Exception ex)
+                {
+                    Console.WriteLine("数据存入队列异常"+ex.Message);
+                    throw new Exception("数据存入队列异常");
+                }
+            }
+        } 
+        private async void ReceiveCallback()
+        { 
+            
+            while (ctsForSocket)
+            {
+                try
+                { 
+                    if (receiveByte.TryDequeue(out byte[]? _buffer) && _buffer != null)
+                    { 
+                        MsgStore += Encoding.UTF8.GetString(_buffer, 0, _buffer.Length);
 
-
-
-                    Parallel.ForEach(Msgs, (Action<string, ParallelLoopState>)((Msg, state) =>
-                    {
-                        SocketMessage socketMessage;
-                        try
+                        if (!MsgStore.StartsWith("{"))
                         {
-                            socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
+                            MsgStore = "";
+                            return;
                         }
-                        catch
+
+                        if (!(MsgStore.EndsWith("}") || MsgStore.EndsWith("\r\n") || MsgStore.EndsWith("\r") || MsgStore.EndsWith("\n")))
                         {
                             return;
                         }
-                        Heartbeat = 15;
-                        if (socketMessage.MesageType != 10000)
+                        string strees = MsgStore;
+                        MsgStore = "";
+                        string[] Msgs = strees.Split('\n').Where(s => !string.IsNullOrEmpty(s)).Where(x => (x.StartsWith('{') && x.EndsWith('}'))).ToArray();
+                        Parallel.ForEach(Msgs, (Action<string, ParallelLoopState>)((Msg, state) =>
                         {
-                            MessageReceivedForServer?.Invoke(socketMessage);
-                        } 
-                    }));
+                            SocketMessage socketMessage;
+                            try
+                            {
+                                socketMessage = JsonSerializer.Deserialize<SocketMessage>(Msg);
+                            }
+                            catch
+                            {
+                                return;
+                            }
+                            Heartbeat = 10;
+                            if (socketMessage.MesageType != 10000)
+                            {
+                                MessageReceivedForServer?.Invoke(socketMessage);
+                            }
+                        }));
+                    }
+                    else
+                    {  
+                        await Task.Delay(25);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Console.WriteLine("客户端解析数据错误，现将服务器断开");
-                    Disconnect(); // 客户端断开连接 
+                    Console.WriteLine("客户端解析数据异常" + ex.Message);
+                    receiveByte.Clear();
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("客户端解析数据异常，现将服务器断开---：" + ex.Message);
+
             }
 
         }
-        private volatile int Heartbeat = 15;
+        private async void PickTimeNum()
+        {
+
+            while (ctsForSocket)
+            {
+                await Task.Delay(1000);
+                if (Heartbeat==3)
+                {
+                    ClearReceiveBuffer(_clientSocket);
+                } 
+            }
+        }
+        private void ClearReceiveBuffer(Socket socket)
+        {
+            byte[] buffer = new byte[4096]; // 使用适当大小的缓冲区
+            try
+            {
+                // 将Socket设置为非阻塞模式
+                socket.Blocking = false;
+                int receivedBytes = 0;
+                do
+                {
+                    receivedBytes = socket.Receive(buffer, 0, buffer.Length, SocketFlags.None);
+                } while (receivedBytes > 0);
+
+
+                Console.Out.WriteLineAsync("清空接收缓存区 完成");
+            }
+            catch (SocketException ex)
+            { 
+                if (ex.SocketErrorCode != SocketError.WouldBlock)
+                { 
+                    Console.WriteLine($"Soket销毁缓存区错误: {ex.SocketErrorCode}");
+                }
+            }
+            finally
+            {
+                // 恢复Socket的阻塞模式
+                socket.Blocking = true;
+                receiveByte.Clear();
+            }
+        }
+
+        private volatile int Heartbeat = 10;
         private async void HeartJump(Socket clientSocket)
         {
             try
-            {
-                Task.Factory.StartNew(async () => Socketlife(clientSocket));
+            { 
+                SocketMessage Msgjump = new SocketMessage();
+                Msgjump.MesageType = 10000;
                 while (true)
                 {
-                    await Task.Delay(6000);
-                    SocketMessage Msgjump = new SocketMessage();
-                    Msgjump.MesageType = 10000;
+                    await Task.Delay(3000);
+
                     if (!clientSocket.Connected)
                     {
                         return;
@@ -202,29 +274,36 @@ namespace SocketClientPor
                     SendMessageToServer(Msgjump);
                 }
             }
-            catch
-            {
-            }
+            catch { }
         }
-        private async void Socketlife(Socket sk)
+        private async void Socketlife()
         {
-            Heartbeat = 15;
+            Heartbeat = 10;
             while (true)
             {
-                await Task.Delay(1000);
-                Heartbeat--;
-                // 尝试获取并减少心跳计数，仅当当前计数大于0时进行更新 
-                if (Heartbeat > 0)
+                try
                 {
-                    //Console.WriteLine("客户端生命：" + Heartbeat);
-                    // 如果更新后的心跳计数为0或负数，则断开连接并移除心跳记录  
+                    await Task.Delay(1000);
+                    Heartbeat--;
+                    // 尝试获取并减少心跳计数，仅当当前计数大于0时进行更新 
+                    if (Heartbeat > 0)
+                    {
+                        Console.WriteLine("客户端生命：" + Heartbeat);
+                        // 如果更新后的心跳计数为0或负数，则断开连接并移除心跳记录  
+                    }
+                    else
+                    {
+                        await Console.Out.WriteLineAsync("心跳停止，断开连接");
+                        Disconnect();
+                        Task.Factory.StartNew(() => { InitialClientConnectAsync(); });
+                        break;
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    await Console.Out.WriteLineAsync("心跳停止，断开连接");
+                    await Console.Out.WriteLineAsync("心跳异常：" + ex.Message);
                     Disconnect();
-                    InitialClientConnectAsync();
-                    break;
+                    Task.Factory.StartNew(() => { InitialClientConnectAsync(); });
                 }
             }
         }
@@ -233,7 +312,11 @@ namespace SocketClientPor
         {
             try
             {
+                receiveByte.Clear();
                 _clientSocket.Close();
+                MsgStore = "";
+                ctsForSocket = false;
+                receiveByte.Clear();
             }
             catch (Exception ex)
             {
